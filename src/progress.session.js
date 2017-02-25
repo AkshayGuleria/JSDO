@@ -1,6 +1,6 @@
 
 /* 
-progress.session.js    Version: 4.4.0-4
+progress.session.js    Version: 4.4.0-5
 
 Copyright (c) 2012-2017 Progress Software Corporation and/or its subsidiaries or affiliates.
  
@@ -1354,6 +1354,7 @@ limitations under the License.
                 this._authProvider._openRequestAndAuthorize(xhr, 
                                                             verb, 
                                                             urlPlusCCID, 
+                                                            async, 
                                                             afterOpenAndAuthorize);
             } else {
                 this._setXHRCredentials(xhr, verb, urlPlusCCID, this.userName, _password, async);
@@ -1485,6 +1486,7 @@ limitations under the License.
                 this._authProvider._openRequestAndAuthorize(xhr,
                                                             'GET',
                                                             uriForRequest,
+                                                            true,  // async
                                                             _connectAfterOpen);
             } catch (e) {
                 setLoginHttpStatus(xhr.status, this);
@@ -2253,67 +2255,78 @@ limitations under the License.
                 authProvider,
                 that = this;
 
-            function addCatalogAfterOpen() {
-                /* This is here as much for CORS situations as the possibility that there might be an 
-                 * out of date cached version of the catalog. The CORS problem happens if you have 
-                 * accessed the catalog locally and then run an app on a different server that requests
-                 * the catalog. Your browser already has the catalog, but the request used to get it was
-                 * a non-CORS request and the browser will raise an error
-                 */
-                progress.data.Session._setNoCacheHeaders(xhr);
-                // set X-CLIENT-PROPS header
-                setRequestHeaderFromContextProps(that, xhr);
-
-                if (isAsync) {
-                    xhr.onreadystatechange = that._onReadyStateChangeGeneric;
-                    xhr.onResponseFn = that._processAddCatalogResult;
-                    xhr.onResponseProcessedFn = that._addCatalogComplete;
-                    
-                    if (that.authenticationModel === progress.data.Session.AUTH_TYPE_BASIC
-                            && isUserAgentiOS
-                            && iOSBasicAuthTimeout) {
-                        xhr._requestTimeout = setTimeout(function () {
-                            clearTimeout(xhr._requestTimeout);
-                            xhr._iosTimeOutExpired = true;
-                            xhr.abort();
-                        },
-                                                    iOSBasicAuthTimeout);
-                    }
-                    
-                    // in case the caller is a JSDOSession
-                    xhr._jsdosession = jsdosession;
-                    xhr._deferred = deferred;
-                    xhr._catalogIndex = catalogIndex;
-                }
-
-                try {
-                    if (typeof that.onOpenRequest === 'function') {
-                        setLastSessionXHR(xhr, that);
-                        var params = {
-                            "xhr": xhr,
-                            "verb": "GET",
-                            "uri": catalogURI,
-                            "async": false,
-                            "formPreTest": false,
-                            "session": that
-                        };
-                        that.onOpenRequest(params);
-                        xhr = params.xhr;
-                    }
-
-                    setLastSessionXHR(xhr, that);
-                    xhr.send(null);
-                } catch (e) {
-                    throw new Error("Error retrieving catalog '" + catalogURI + "'.\n" + e.message);
-                }
-                if (isAsync) {
-                    return progress.data.Session.ASYNC_PENDING;
-                } else {
-                    return that._processAddCatalogResult(xhr);
-                }
+            function addCatalogAfterOpen(errorObject) {
+                var newError;
                 
+                if (errorObject) {
+                    try {
+                        that._processAddCatalogResult(xhr);
+                        newError = errorObject;
+                    }
+                    catch (e) {
+                        newError = new Error(e.message + "'.\n" + errorObject.message);
+                    }
+                    that._addCatalogComplete(xhr.pdsession,
+                                             progress.data.Session.GENERAL_FAILURE,
+                                             newError,
+                                             xhr);
+                } else {
+                    /* This is here as much for CORS situations as the possibility that there might be an 
+                     * out of date cached version of the catalog. The CORS problem happens if you have 
+                     * accessed the catalog locally and then run an app on a different server that requests
+                     * the catalog. Your browser already has the catalog, but the request used to get it was
+                     * a non-CORS request and the browser will raise an error
+                     */
+                    progress.data.Session._setNoCacheHeaders(xhr);
+                    // set X-CLIENT-PROPS header
+                    setRequestHeaderFromContextProps(that, xhr);
+
+                    if (isAsync) {
+                        xhr.onreadystatechange = that._onReadyStateChangeGeneric;
+                        xhr.onResponseFn = that._processAddCatalogResult;
+                        xhr.onResponseProcessedFn = that._addCatalogComplete;
+                        
+                        if (that.authenticationModel === progress.data.Session.AUTH_TYPE_BASIC
+                                && isUserAgentiOS
+                                && iOSBasicAuthTimeout) {
+                            xhr._requestTimeout = setTimeout(function () {
+                                clearTimeout(xhr._requestTimeout);
+                                xhr._iosTimeOutExpired = true;
+                                xhr.abort();
+                            },
+                                                        iOSBasicAuthTimeout);
+                        }
+                        
+                    }
+
+                    try {
+                        if (typeof that.onOpenRequest === 'function') {
+                            setLastSessionXHR(xhr, that);
+                            var params = {
+                                "xhr": xhr,
+                                "verb": "GET",
+                                "uri": catalogURI,
+                                "async": false,
+                                "formPreTest": false,
+                                "session": that
+                            };
+                            that.onOpenRequest(params);
+                            xhr = params.xhr;
+                        }
+
+                        setLastSessionXHR(xhr, that);
+                        xhr.send(null);
+                    } catch (e) {
+                        throw new Error("Error retrieving catalog '" + catalogURI + "'.\n" + e.message);
+                    }
+                    if (isAsync) {
+                        return progress.data.Session.ASYNC_PENDING;
+                    } else {
+                        return that._processAddCatalogResult(xhr);
+                    }
+                    
+                }
             }
-            
             // check whether the args were passed in a single object. If so, copy them
             // to the named arguments and a variable
             if (arguments.length > 0) {
@@ -2401,6 +2414,11 @@ limitations under the License.
             xhr = new XMLHttpRequest();
             xhr.pdsession = this;
             xhr._catalogURI = catalogURI;
+            
+            // in case the caller is a JSDOSession
+            xhr._jsdosession = jsdosession;
+            xhr._deferred = deferred;
+            xhr._catalogIndex = catalogIndex;
 
             // for now we don't support multiple version of the catalog across sessions
             if (progress.data.ServicesManager.getSession(catalogURI) !== undefined) {
@@ -2425,7 +2443,7 @@ limitations under the License.
             }
 
             if (authProvider) {
-                authProvider._openRequestAndAuthorize(xhr, 'GET', catalogURI, addCatalogAfterOpen);
+                authProvider._openRequestAndAuthorize(xhr, 'GET', catalogURI, isAsync, addCatalogAfterOpen);
                 // existing code in JSDOSession addCatalog expects to get this as a return value,
                 // have to return it now
                 return progress.data.Session.ASYNC_PENDING;
@@ -2933,6 +2951,7 @@ limitations under the License.
                     this._authProvider._openRequestAndAuthorize(xhr,
                                                                 'GET',
                                                                 args.pingURI,
+                                                                args.async,
                                                                 sendPingAfterOpen);
                 } else {
                     // get rid of this if we do away with synchronous support (i.e., customer use of
